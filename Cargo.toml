@@ -1,0 +1,13 @@
+[package]
+name = "generic_cache"
+authors = ["Nattapong Sirilappanich"]
+description = "Easy to use object caching based on defined TTL"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+readme = "README.md"
+[dependencies]
+
+[dev-dependencies]
+tokio = { version = "^1", features = ["full"] }
+tokio-test = { version = "^0.4" }
