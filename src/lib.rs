@@ -13,7 +13,7 @@
 //! ```rust
 //! use generic_cache::Object;
 //! 
-//! let cached = Object::new(1000, 100, async || {Ok::<u16, ()>(200)}); // Explicitly define type for Error. Otherwise, compile will fail.
+//! let cached = Object::new(std::time::Duration::from_secs(1), 100, async || {Ok::<u16, ()>(200)}); // Explicitly define type for Error. Otherwise, compile will fail.
 //! let first = cached.get().unwrap();
 //! let second = cached.get().unwrap();
 //! assert_eq!(*first, 100, "Expect {} to equals {}", *first, 0);
@@ -26,9 +26,9 @@
 //! use generic_cache::Object;
 //! 
 //! # tokio_test::block_on(async {
-//! let mut cached = Object::new(0, 100, async || {Ok::<u16, ()>(200)}); // Explicitly define type for Error. Otherwise, compile will fail.
+//! let mut cached = Object::new(std::time::Duration::from_millis(100), 100, async || {Ok::<u16, ()>(200)}); // Explicitly define type for Error. Otherwise, compile will fail.
 //! let first = *cached.get().unwrap();
-//! sleep(time::Duration::from_millis(1));
+//! sleep(time::Duration::from_millis(200));
 //! if let Ok(_) = cached.get() {
 //!     panic!("Cache should be expired but it is not.")
 //! } else {
@@ -45,7 +45,7 @@
 //! use generic_cache::Object;
 //! 
 //! # tokio_test::block_on(async {
-//! let mut cached = Object::new(0, 100, async || {Ok::<u16, ()>(200)}); // Explicitly define type for Error. Otherwise, compile will fail.
+//! let mut cached = Object::new(std::time::Duration::from_secs(0), 100, async || {Ok::<u16, ()>(200)}); // Explicitly define type for Error. Otherwise, compile will fail.
 //! let first = *cached.get_or_refresh().await.unwrap();
 //! sleep(time::Duration::from_millis(1));
 //! let second = *cached.get_or_refresh().await.unwrap();
@@ -59,7 +59,7 @@
 //! use generic_cache::Object;
 //! 
 //! # tokio_test::block_on(async {
-//! let mut cached = Object::new_and_refresh(1000, async || {Ok::<u16, ()>(200)}).await.unwrap(); // Explicitly define type for Error. Otherwise, compile will fail.
+//! let mut cached = Object::new_and_refresh(std::time::Duration::from_secs(1), async || {Ok::<u16, ()>(200)}).await.unwrap(); // Explicitly define type for Error. Otherwise, compile will fail.
 //! let first = *cached.get_or_refresh().await.unwrap();
 //! let second = *cached.get_or_refresh().await.unwrap();
 //! assert_eq!(first, second, "Expect {} to equals {}", first, second);
@@ -67,8 +67,8 @@
 //! ```
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::AsyncFn;
-use std::time::SystemTime;
-/** The cache is timeout. [Object::refresh()] need to be called. */
+use std::time::{Duration, SystemTime};
+/// The cache is timeout. [Object::refresh()] need to be called.
 pub struct TimeoutError {}
 impl Display for TimeoutError {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
@@ -81,30 +81,26 @@ impl Debug for TimeoutError {
     }
 }
 
-/**
- * Generic cache object which cache an object for given period of time before it return TimeoutError
- * to signal caller to call refresh function before further attempt.
- * The refresh_fn should be async function that return Result of the same type as the cached object.
- * If there's any error occur inside refresh_fn, it should return Error result back.
- */
+/// Generic cache object which cache an object for given period of time before it return TimeoutError
+/// to signal caller to call refresh function before further attempt.
+/// The refresh_fn should be async function that return Result of the same type as the cached object.
+/// If there's any error occur inside refresh_fn, it should return Error result back.
 pub struct Object<T, F, E = ()> where F: AsyncFn() -> Result<T, E> {
-    ttl: u128,
+    ttl: Duration,
     last_update: SystemTime,
     obj: T,
     refresh_fn: F
 }
 impl<T, F, E> Debug for Object<T, F, E> where T: Debug, F: AsyncFn() -> Result<T, E> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(fmt, "{{ttl: {}, elapsed: {}, obj: {:#?}}}", self.ttl, self.last_update.elapsed().unwrap().as_millis(), self.obj)
+        write!(fmt, "{{ttl: {} us, elapsed: {}, obj: {:#?}}}", self.ttl.as_micros(), self.last_update.elapsed().unwrap().as_millis(), self.obj)
     }
 }
-impl<T, F, E> Object<T, F, E> where F: AsyncFn() -> Result<T, E> {
-    /** 
-     * Create a new cached Object with default value specify in second argument. 
-     * `ttl` is in milli-second unit.
-     * `refresh_fn` is a function to refresh value and last update time.
-     */
-    pub fn new(ttl: u128, obj: T, refresh_fn: F) -> Object<T, F, E> {
+impl<T, F, E> Object<T, F, E> where F: AsyncFn() -> Result<T, E> { 
+    /// Create a new cached Object with default value specify in second argument. 
+    /// `ttl` is in milli-second unit.
+    /// `refresh_fn` is a function to refresh value and last update time.
+    pub fn new(ttl: Duration, obj: T, refresh_fn: F) -> Object<T, F, E> {
         Object {
             ttl,
             last_update: SystemTime::now(),
@@ -112,13 +108,11 @@ impl<T, F, E> Object<T, F, E> where F: AsyncFn() -> Result<T, E> {
             refresh_fn
         }
     }
-    /**
-     * Create a new cached Object and immediately refresh the value instead of using default value.
-     * `ttl` is in milli-second unit.
-     * `refresh_fn` is a function to refresh value and last update time.
-     * The different from `new` function is that it is async and it immediately call `refresh_fn`.
-     */
-    pub async fn new_and_refresh(ttl: u128, refresh_fn: F) -> Result<Object<T, F, E>, E> {
+    /// Create a new cached Object and immediately refresh the value instead of using default value.
+    /// `ttl` is in milli-second unit.
+    /// `refresh_fn` is a function to refresh value and last update time.
+    /// The different from `new` function is that it is async and it immediately call `refresh_fn`.
+    pub async fn new_and_refresh(ttl: Duration, refresh_fn: F) -> Result<Object<T, F, E>, E> {
         let v = refresh_fn().await?;
         let obj = Object {
             ttl,
@@ -128,45 +122,49 @@ impl<T, F, E> Object<T, F, E> where F: AsyncFn() -> Result<T, E> {
         };
         Ok(obj)
     }
-    /**
-     * Refresh cache immediately and update last update time if refresh success.
-     */
+    /// Refresh cache immediately and update last update time if refresh success.
     pub async fn refresh(&mut self) -> Result<(), E> {
         self.obj = (self.refresh_fn)().await?;
         self.last_update = SystemTime::now();
         Ok(())
     }
-    /**
-     * Read current cached value or return Error if cache is already expired.
-     */
+    /// Read current cached value or return Error if cache is already expired.
     pub fn get(&self) -> Result<&T, TimeoutError> {
-        if self.last_update.elapsed().unwrap().as_millis() > self.ttl {
+        if self.last_update.elapsed().unwrap() > self.ttl {
             return Err(TimeoutError {})
         }
         Ok(&self.obj)
     }
-    /**
-     * Read current cached value or refresh the value if it is already expired then
-     * return the new value.
-     */
+    /// Read current cached value or refresh the value if it is already expired then
+    /// return the new value.
     pub async fn get_or_refresh(&mut self) -> Result<&T, E> {
-        if self.last_update.elapsed().unwrap().as_millis() > self.ttl {
+        if self.last_update.elapsed().unwrap() > self.ttl {
             self.obj = (self.refresh_fn)().await?;
         }
         Ok(&self.obj)
+    }
+    /// Get time remain that the cache still valid.
+    /// In other word, time remain before it return [TimeoutError] on [Object::get] function.
+    pub fn time_remain(&self) -> Duration {
+        let elapsed = self.last_update.elapsed().unwrap();
+        if elapsed > self.ttl {
+            Duration::from_micros(0u64)
+        } else {
+            self.ttl - elapsed
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use core::time;
-    use std::thread::sleep;
+    use std::{thread::sleep, time::Duration};
 
     use super::*;
 
     #[test]
     fn simple_cache() {
-        let cached = Object::new(1000, 100, async || {Ok::<u16, ()>(200)});
+        let cached = Object::new(Duration::from_secs(1), 100, async || {Ok::<u16, ()>(200)});
         let first = cached.get().unwrap();
         let second = cached.get().unwrap();
         assert_eq!(*first, 100, "Expect {} to equals {}", *first, 0);
@@ -174,7 +172,7 @@ mod tests {
     }
     #[tokio::test]
     async fn simple_refresh() {
-        let mut cached = Object::new(1000, 100, async || {Ok::<u16, ()>(200)});
+        let mut cached = Object::new(Duration::from_secs(1), 100, async || {Ok::<u16, ()>(200)});
         let first = *cached.get().unwrap();
         cached.refresh().await.unwrap();
         let second = *cached.get().unwrap();
@@ -183,7 +181,7 @@ mod tests {
     }
     #[tokio::test]
     async fn simple_no_cache() {
-        let mut cached = Object::new(0, 100, async || {Ok::<u16, ()>(200)});
+        let mut cached = Object::new(Duration::from_secs(0), 100, async || {Ok::<u16, ()>(200)});
         let first = *cached.get_or_refresh().await.unwrap();
         sleep(time::Duration::from_millis(1));
         let second = *cached.get_or_refresh().await.unwrap();
@@ -191,7 +189,7 @@ mod tests {
     }
     #[tokio::test]
     async fn simple_expire_check() {
-        let mut cached = Object::new(0, 100, async || {Ok::<u16, ()>(200)});
+        let mut cached = Object::new(Duration::from_secs(0), 100, async || {Ok::<u16, ()>(200)});
         let first = *cached.get().unwrap();
         sleep(time::Duration::from_millis(1));
         if let Ok(_) = cached.get() {
@@ -204,17 +202,28 @@ mod tests {
     }
     #[tokio::test]
     async fn immediate_refresh() {
-        let mut cached = Object::new_and_refresh(1000, async || {Ok::<u16, ()>(200)}).await.unwrap();
+        let mut cached = Object::new_and_refresh(Duration::from_secs(1), async || {Ok::<u16, ()>(200)}).await.unwrap();
         let first = *cached.get_or_refresh().await.unwrap();
         let second = *cached.get_or_refresh().await.unwrap();
         assert_eq!(first, second, "Expect {} to equals {}", first, second);
+    }
+    #[tokio::test]
+    async fn time_remain_validate() {
+        let mut cached = Object::new(Duration::from_secs(5), 100, async || {Ok::<u16, ()>(200)});
+        sleep(Duration::from_secs(1));
+        let original_remain = cached.time_remain();
+        println!("Original time remain is {:?}", original_remain);
+        cached.refresh().await.unwrap();
+        let new_remain = cached.time_remain();
+        println!("New time remain is {:?}", new_remain);
+        assert!(new_remain > original_remain, "Original time remain should be less than a fresh new value time remain.");
     }
     #[test]
     fn simple_object() {
         struct Dummy {
             v: u8
         }
-        let cached = Object::new(1000, Dummy {v: 1}, async || {Ok::<Dummy, ()>(Dummy {v: 2})});
+        let cached = Object::new(Duration::from_secs(1), Dummy {v: 1}, async || {Ok::<Dummy, ()>(Dummy {v: 2})});
         let Dummy { v: v1} = cached.get().unwrap();
         let Dummy { v: v2} = cached.get().unwrap();
         assert_eq!(*v1, 1, "Expect {} to equals {}", v1, 1);
