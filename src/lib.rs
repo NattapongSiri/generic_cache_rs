@@ -69,7 +69,8 @@ use std::fmt::{Debug, Display, Formatter};
 use std::ops::AsyncFn;
 use std::time::{Duration, SystemTime};
 /// The cache is timeout. [Object::refresh()] need to be called.
-pub struct TimeoutError {}
+#[derive(Clone, Copy)]
+pub struct TimeoutError;
 impl Display for TimeoutError {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         write!(fmt, "The cached object is timeout. Please call refresh method to refresh the value.")
@@ -85,6 +86,7 @@ impl Debug for TimeoutError {
 /// to signal caller to call refresh function before further attempt.
 /// The refresh_fn should be async function that return Result of the same type as the cached object.
 /// If there's any error occur inside refresh_fn, it should return Error result back.
+#[derive(Clone, Copy)]
 pub struct Object<T, F, E = ()> where F: AsyncFn() -> Result<T, E> {
     ttl: Duration,
     last_update: SystemTime,
