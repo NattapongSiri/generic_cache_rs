@@ -49,7 +49,7 @@
 //! let first = *cached.get_or_refresh().await.unwrap();
 //! sleep(time::Duration::from_millis(1));
 //! let second = *cached.get_or_refresh().await.unwrap();
-//! assert_ne!(first, second, "Expect {} to equals {}", first, second);
+//! assert_eq!(first, second, "Expect {} to equals {}", first, second);
 //! # })
 //! ```
 //! - No default value when create a cache and auto refresh expired cache value
@@ -66,7 +66,6 @@
 //! # })
 //! ```
 use std::fmt::{Debug, Display, Formatter};
-use std::ops::AsyncFn;
 use std::time::{Duration, SystemTime};
 /// The cache is timeout. [Object::refresh()] need to be called.
 #[derive(Clone, Copy)]
@@ -87,18 +86,18 @@ impl Debug for TimeoutError {
 /// The refresh_fn should be async function that return Result of the same type as the cached object.
 /// If there's any error occur inside refresh_fn, it should return Error result back.
 #[derive(Clone, Copy)]
-pub struct Object<T, F, E = ()> where F: AsyncFn() -> Result<T, E> {
+pub struct Object<T, F, E = ()> where F: AsyncFnMut() -> Result<T, E> {
     ttl: Duration,
     last_update: SystemTime,
     obj: T,
     refresh_fn: F
 }
-impl<T, F, E> Debug for Object<T, F, E> where T: Debug, F: AsyncFn() -> Result<T, E> {
+impl<T, F, E> Debug for Object<T, F, E> where T: Debug, F: AsyncFnMut() -> Result<T, E> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         write!(fmt, "{{ttl: {} us, elapsed: {}, obj: {:#?}}}", self.ttl.as_micros(), self.last_update.elapsed().unwrap().as_millis(), self.obj)
     }
 }
-impl<T, F, E> Object<T, F, E> where F: AsyncFn() -> Result<T, E> { 
+impl<T, F, E> Object<T, F, E> where F: AsyncFnMut() -> Result<T, E> { 
     /// Create a new cached Object with default value specify in second argument. 
     /// `ttl` is in milli-second unit.
     /// `refresh_fn` is a function to refresh value and last update time.
@@ -114,7 +113,7 @@ impl<T, F, E> Object<T, F, E> where F: AsyncFn() -> Result<T, E> {
     /// `ttl` is in milli-second unit.
     /// `refresh_fn` is a function to refresh value and last update time.
     /// The different from `new` function is that it is async and it immediately call `refresh_fn`.
-    pub async fn new_and_refresh(ttl: Duration, refresh_fn: F) -> Result<Object<T, F, E>, E> {
+    pub async fn new_and_refresh(ttl: Duration, mut refresh_fn: F) -> Result<Object<T, F, E>, E> {
         let v = refresh_fn().await?;
         let obj = Object {
             ttl,
@@ -140,7 +139,7 @@ impl<T, F, E> Object<T, F, E> where F: AsyncFn() -> Result<T, E> {
     /// Read current cached value or refresh the value if it is already expired then
     /// return the new value.
     pub async fn get_or_refresh(&mut self) -> Result<&T, E> {
-        if self.last_update.elapsed().unwrap() > self.ttl {
+        if self.last_update.elapsed().unwrap() >= self.ttl {
             self.obj = (self.refresh_fn)().await?;
         }
         Ok(&self.obj)
@@ -183,15 +182,16 @@ mod tests {
     }
     #[tokio::test]
     async fn simple_no_cache() {
-        let mut cached = Object::new(Duration::from_secs(0), 100, async || {Ok::<u16, ()>(200)});
+        let mut cached = Object::new(Duration::ZERO, 100, async || {Ok::<u16, ()>(200)});
         let first = *cached.get_or_refresh().await.unwrap();
         sleep(time::Duration::from_millis(1));
         let second = *cached.get_or_refresh().await.unwrap();
-        assert_ne!(first, second, "Expect {} to equals {}", first, second);
+        assert_eq!(first, 200, "Expect {} to equals {}", first, 200);
+        assert_eq!(first, second, "Expect {} to equals {}", first, second);
     }
     #[tokio::test]
     async fn simple_expire_check() {
-        let mut cached = Object::new(Duration::from_secs(0), 100, async || {Ok::<u16, ()>(200)});
+        let mut cached = Object::new(Duration::from_millis(1), 100, async || {Ok::<u16, ()>(200)});
         let first = *cached.get().unwrap();
         sleep(time::Duration::from_millis(1));
         if let Ok(_) = cached.get() {
@@ -230,5 +230,25 @@ mod tests {
         let Dummy { v: v2} = cached.get().unwrap();
         assert_eq!(*v1, 1, "Expect {} to equals {}", v1, 1);
         assert_eq!(v1, v2, "Expect {} to equals {}", v1, v2);
+    }
+    #[tokio::test]
+    async fn simple_object_mut() {
+        let mut count = 0u8;
+        struct Dummy {
+            v: u8
+        }
+        let mut cached = Object::new(Duration::from_secs(1), Dummy {v: 1}, async || {
+            count += 1;
+            Ok::<Dummy, ()>(Dummy {v: 2})
+        });
+        let Dummy { v: v1} = cached.get().unwrap();
+        let Dummy { v: v2} = cached.get().unwrap();
+        let original = *v1;
+        assert_eq!(*v1, 1, "Expect {} to equals {}", v1, 1);
+        assert_eq!(*v1, *v2, "Expect {} to equals {}", v1, v2);
+        cached.refresh().await.expect("to get a new value");
+        let Dummy { v: new_v} = cached.get().unwrap();
+        assert_ne!(original, *new_v, "Expect to get a new value");
+        assert_eq!(count, 1, "counter should be 1");
     }
 }
