@@ -99,7 +99,7 @@ impl<T, F, E> Debug for Object<T, F, E> where T: Debug, F: AsyncFnMut() -> Resul
 }
 impl<T, F, E> Object<T, F, E> where F: AsyncFnMut() -> Result<T, E> { 
     /// Create a new cached Object with default value specify in second argument. 
-    /// `ttl` is in milli-second unit.
+    /// `ttl` is "time to live" which is duration that the cached value will be return.
     /// `refresh_fn` is a function to refresh value and last update time.
     pub fn new(ttl: Duration, obj: T, refresh_fn: F) -> Object<T, F, E> {
         Object {
@@ -110,7 +110,7 @@ impl<T, F, E> Object<T, F, E> where F: AsyncFnMut() -> Result<T, E> {
         }
     }
     /// Create a new cached Object and immediately refresh the value instead of using default value.
-    /// `ttl` is in milli-second unit.
+    /// `ttl` is "time to live" which is duration that the cached value will be return.
     /// `refresh_fn` is a function to refresh value and last update time.
     /// The different from `new` function is that it is async and it immediately call `refresh_fn`.
     pub async fn new_and_refresh(ttl: Duration, mut refresh_fn: F) -> Result<Object<T, F, E>, E> {
