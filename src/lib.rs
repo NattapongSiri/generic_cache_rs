@@ -11,7 +11,7 @@
 //! # Example
 //! - Verify two cached call to get value back to back to check if it is actually the same value.
 //! ```rust
-//! use generic_cache::Object;
+//! use generic_cache::{CachedObject, Object};
 //! 
 //! let cached = Object::new(std::time::Duration::from_secs(1), 100, async || {Ok::<u16, ()>(200)}); // Explicitly define type for Error. Otherwise, compile will fail.
 //! let first = cached.get().unwrap();
@@ -66,6 +66,8 @@
 //! # })
 //! ```
 use std::fmt::{Debug, Display, Formatter};
+use std::future::Future;
+use std::pin::Pin;
 use std::time::{Duration, SystemTime};
 /// The cache is timeout. [Object::refresh()] need to be called.
 #[derive(Clone, Copy)]
@@ -95,6 +97,69 @@ pub struct Object<T, F, E = ()> where F: AsyncFnMut() -> Result<T, E> {
 impl<T, F, E> Debug for Object<T, F, E> where T: Debug, F: AsyncFnMut() -> Result<T, E> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         write!(fmt, "{{ttl: {} us, elapsed: {}, obj: {:#?}}}", self.ttl.as_micros(), self.last_update.elapsed().unwrap().as_millis(), self.obj)
+    }
+}
+/// A trait to provide a type that hides async refresh function.
+/// It allows user to use `dyn CachedObject` as a trait object or
+/// use `impl CachedObject` to allow compile time trait realization.
+/// 
+/// Note that this trait return `Pin<Box<dyn Future>>` instead of `impl Future` because
+/// it allows `dyn CachedObject` to be used in a trait object context.
+/// 
+/// This will incur some performance overhead because it requires heap allocation.
+/// 
+/// This behavior is different from [Object] which return `impl Future` that may not
+/// allocate on heap.
+/// 
+/// Usage example, static interior mutability with [std::sync::LazyLock] and [std::sync::RwLock] to create a global thread safe cached object.
+/// ```rust
+/// # tokio_test::block_on(async {
+/// use core::time::Duration;
+/// use generic_cache::{CachedObject, Object};
+/// use std::sync::{LazyLock, RwLock};
+/// use tokio::time::sleep;
+/// 
+/// static CACHED: LazyLock<RwLock<Box<dyn CachedObject<u16, ()> + Send + Sync>>> = LazyLock::new(|| {
+///    RwLock::new(Box::new(Object::new(std::time::Duration::from_secs(1), 100, async || {Ok::<u16, ()>(200)})))
+/// });
+/// assert_eq!((&*CACHED).read().unwrap().get().unwrap(), &100u16);
+/// sleep(Duration::from_secs(2)).await;
+/// assert!((&*CACHED).read().unwrap().get().is_err(), "Cache should be expired");
+/// assert_eq!((&*CACHED).write().unwrap().get_or_refresh().await.unwrap(), &200u16, "Cache should be refreshed to 200");
+/// # })
+/// ```
+/// Until https://github.com/rust-lang/rust/issues/63065 is resolved, 
+/// we cannot use `impl CachedObject` in a static binding so `dyn CachedObject` is currently the
+/// only solution available.
+pub trait CachedObject<T, E> {
+    /// Refresh cache immediately and update last update time if refresh success.
+    fn refresh(&mut self) -> Pin<Box<dyn Future<Output = Result<(), E>> + '_>>;
+    /// Read current cached value or return Error if cache is already expired.
+    fn get(&self) -> Result<&T, TimeoutError>;
+    /// Read current cached value or refresh the value if it is already expired then
+    /// return the new value.
+    fn get_or_refresh<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<&'a T, E>> + 'a>> where T: 'a;
+    /// Get time remain that the cache still valid.
+    /// In other word, time remain before it return [TimeoutError] on [Object::get] function.
+    fn time_remain(&self) -> Duration;
+}
+
+impl<T, F, E> CachedObject<T, E> for Object<T, F, E> where F: AsyncFnMut() -> Result<T, E> { 
+    #[inline(always)]
+    fn refresh(&mut self) -> Pin<Box<dyn Future<Output = Result<(), E>> + '_>> {
+        Box::pin(Object::refresh(self))
+    }
+    #[inline(always)]
+    fn get(&self) -> Result<&T, TimeoutError> {
+        Object::get(&self)
+    }
+    #[inline(always)]
+    fn get_or_refresh<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<&'a T, E>> + 'a>> where T: 'a {
+        Box::pin(Object::get_or_refresh(self))
+    }
+    #[inline(always)]
+    fn time_remain(&self) -> Duration {
+        Object::time_remain(&self)
     }
 }
 impl<T, F, E> Object<T, F, E> where F: AsyncFnMut() -> Result<T, E> { 
@@ -155,7 +220,6 @@ impl<T, F, E> Object<T, F, E> where F: AsyncFnMut() -> Result<T, E> {
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use core::time;
